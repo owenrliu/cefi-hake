@@ -1,0 +1,251 @@
+---
+title: "Explore Acoustic Trawl Data"
+format: html
+editor: source
+---
+
+```{r}
+# explore data
+library(tidyverse)
+library(here)
+library(readxl)
+library(viridis)
+library(sf)
+library(rnaturalearth)
+library(magick)
+
+# plot theme
+pt <- theme_minimal()+theme(panel.border=element_rect(color="black",fill=NA))
+theme_set(pt)
+
+# backgroundf map
+# spatial background map
+# load west cost land for mapping
+coast <- ne_states(country='United States of America',returnclass = 'sf') %>% 
+  filter(name %in% c('California','Oregon','Washington','Nevada')) %>%
+  st_transform(crs = "+proj=utm +zone=10 +datum=WGS84 +units=km")
+coastcn <- ne_countries(country="Canada",scale=50,returnclass='sf')%>%
+  st_transform(crs = "+proj=utm +zone=10 +datum=WGS84 +units=km")
+
+coast <- st_union(coast,coastcn)
+ggplot(coast)+geom_sf()
+```
+
+
+# Import Data
+
+There are a lot of files in each folder. Let's try to bind together the un-kriged, aged output for all years into a useable format.
+
+```{r}
+# general file name
+fn <- "EchoPro_un-kriged_aged_output"
+# all files in the FEAT data fitting that match the string above
+fls <- list.files(here('data','CONFIDENTIAL','FEAT'),recursive = T,full.names = T) %>% str_subset(fn)
+# a couple of manual removals
+fls <- fls[-c(23:44,47:50,53:56,61:66)]
+
+# in the aged output, sheet 1 is sexes combined, sheet 2 is males, sheet 3 is females
+dat1 <- readxl::read_xlsx(fls[[1]],sheet = 2,skip = 1)
+dat2 <- readxl::read_xlsx(fls[[1]],sheet=3,skip=1)
+dat <- bind_rows(dat1,dat2)
+
+import_aged_year <- function(yr){
+  to_import <- fls %>% str_subset(paste(yr))
+  males <- map_df(to_import,function(fl) {
+    read_xlsx(fl,sheet = 2,skip = 1) %>% 
+    mutate(sex="male") %>% 
+    rename(wgt=wgt_male)
+  })
+  females <- map_df(to_import,function(fl) {
+    read_xlsx(fl,sheet = 3,skip = 1) %>% 
+    mutate(sex="female") %>% 
+    rename(wgt=wgt_female)
+  })
+  bind_rows(males,females) %>% mutate(year=yr)
+}
+
+```
+
+```{r}
+dat_aged <- map_df(c(1995,1998,seq(2001,2023,by=2),2012),import_aged_year)
+# save for later
+write_rds(dat_aged,here('data','CONFIDENTIAL','un-kriged_aged_output_allyears.rds'))
+```
+
+# Age Patterns
+
+Bubble plot of age structure?
+
+```{r}
+dat_agesex_comps_year <- dat_aged %>% 
+  group_by(year,sex) %>% 
+  summarise(across(`1`:`20`,\(x) sum(x,na.rm=T))) %>% 
+  ungroup()
+
+dat_agesex_long <- dat_agesex_comps_year %>% 
+  pivot_longer(`1`:`20`,values_to = "n",names_to="age") %>% 
+  mutate(age=as.integer(age)) %>% 
+  # add age props
+  group_by(year,sex) %>% 
+  mutate(ageprop=n/sum(n,na.rm=T)) %>% 
+  ungroup()
+
+p_agesex_comps_year <- dat_agesex_long %>%
+  ggplot(aes(year,age,size=n))+
+  facet_wrap(~sex)+
+  geom_point()
+p_agesex_comps_year
+
+dat_agesex_long %>% 
+  pivot_wider(names_from=sex,values_from = n) %>% 
+  ggplot(aes(female,male))+geom_point()+
+  geom_smooth()+
+  geom_abline(slope=1,intercept=0,linetype=2)
+
+# as proportions
+p_agesex_props_year <- dat_agesex_long %>%
+  ggplot(aes(year,age,size=ageprop))+
+  geom_point()+
+  facet_wrap(~sex)
+p_agesex_props_year
+
+```
+
+# Spatial
+
+```{r}
+dat_aged_sf <- dat_aged %>% 
+  mutate(nonzero=wgt>0) %>% 
+  st_as_sf(coords=c("Lon","Lat"),crs=4326)%>%
+  st_transform(crs = "+proj=utm +zone=10 +datum=WGS84 +units=km")
+```
+
+```{r bbox}
+buff <- st_bbox(dat_aged_sf)
+coast <- coast %>% st_crop(buff)
+```
+
+```{r,fig.height=12,fig.width=8}
+# ggplot()+
+#   geom_sf(data=coast,fill='gray80')+
+#   geom_sf(data=dat_aged_sf)+
+#   facet_wrap(~year)
+
+# plot and save maps for each year
+ggplot()+
+  geom_sf(data=coast,fill='gray80')+
+  geom_sf(data=dat_aged_sf %>% filter(year==2023,sex=='female'),size=0.5,aes(col=nonzero))+
+  labs(color="Hake Presence")+
+  coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+  scale_color_manual(values=c("gray80","red"))+
+  theme(legend.position=c(0.7,0.8),legend.background = element_rect(color="white"))
+
+walk(unique(dat_aged_sf$year),function(yr){
+  p <- ggplot()+
+    geom_sf(data=coast,fill='gray80')+
+    geom_sf(data=dat_aged_sf %>% filter(year==yr,sex=='female'),size=0.5,aes(col=nonzero))+
+    labs(color="Hake Presence")+
+    coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+    scale_color_manual(values=c("gray80","red"))+
+    theme(legend.position=c(0.7,0.8),legend.background = element_rect(color="white"))
+  ggsave(here('model output','maps',paste0('FEAT samples map ',yr,'.png')),p,w=8,h=12)
+})
+```
+
+Spatial age props
+
+```{r,fig.height=12,fig.width=8}
+dat_spatial_ageprop <- dat_aged_sf %>% 
+  filter(wgt>0) %>% 
+  mutate(sampnum=row_number()) %>% 
+  pivot_longer(`1`:`20`,values_to = "n",names_to="age") %>% 
+  mutate(age=as.integer(age)) %>% 
+  # add age props
+  group_by(year,sampnum) %>% 
+  mutate(ageprop=n/sum(n,na.rm=T)) %>% 
+  ungroup() %>% 
+  mutate(ageprop=na_if(ageprop,0))
+
+p <- ggplot()+
+  geom_sf(data=coast,fill='gray80')+
+  geom_sf(data=dat_aged_sf %>% filter(year==2003),col='gray90',size=0.25)+
+  geom_sf(data= dat_spatial_ageprop %>% filter(year==2003,sex=='female',age==20),size=0.5,aes(col=ageprop))+
+  labs(color="Proportion")+
+  coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+  scale_color_viridis(direction = -1,limits=c(0,1),na.value='gray80')+
+  theme(legend.position=c(0.7,0.8),legend.background = element_rect(color="white"))
+p
+yrs_ages <- crossing(year=unique(dat_aged$year),age=2:20) %>% arrange(age,year)
+
+walk2(yrs_ages$year,yrs_ages$age,function(yr,a){
+  d1 <- dat_spatial_ageprop %>% filter(year==yr,sex=='female',age==a)
+  p <- ggplot()+
+    geom_sf(data=coast,fill='gray80',size=0.25)+
+    geom_sf(data=dat_aged_sf %>% filter(year==yr),col='gray90',size=0.5)+
+    geom_sf(data=d1,size=0.5,aes(col=ageprop))+
+    labs(color="Proportion")+
+    coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+    scale_color_viridis(direction = -1,limits=c(0,1))+
+    labs(title=paste0(yr,": Age ",a))+
+    theme(legend.position=c(0.7,0.8),legend.background = element_rect(color="white"))
+  ggsave(here('model output','maps',paste0("age ",a),paste0('Map ',yr,' Age ',a,' proportions.png')),p,w=8,h=12)
+})
+```
+
+Spatial age props, binned by "juvenile" (ages 2-3) and "adult" (ages 4+)
+
+```{r,fig.height=12,fig.width=8}
+samp_info <- dat_spatial_ageprop %>% mutate(x=st_coordinates(.)[,1],y=st_coordinates(.)[,2]) %>% st_set_geometry(NULL) %>%
+  distinct(sampnum,x,y)
+dat_spatial_ageprop_binned <- dat_spatial_ageprop %>% 
+  st_set_geometry(NULL) %>% 
+  mutate(binclass=ifelse(age%in%c(1,2,3),"juvenile","adult")) %>% 
+  group_by(year,sampnum,binclass) %>% 
+  summarise(totn=sum(n,na.rm=T)) %>% 
+  group_by(year,sampnum) %>% 
+  mutate(prop=totn/sum(totn)) %>% 
+  ungroup() %>% 
+  mutate(prop=na_if(prop,0)) %>% 
+  left_join(samp_info,by=join_by(sampnum)) %>%
+  st_as_sf(coords=c('x','y'),crs = "+proj=utm +zone=10 +datum=WGS84 +units=km")
+  
+yrs_stages <- crossing(year=unique(dat_aged$year),stage=c("juvenile","adult")) %>% arrange(stage,year)
+
+walk2(yrs_stages$year,yrs_stages$stage,function(yr,stg){
+  d1 <- dat_spatial_ageprop_binned %>% filter(year==yr,binclass==stg)
+  p <- ggplot()+
+    geom_sf(data=coast,fill='gray80',size=0.25)+
+    geom_sf(data=dat_aged_sf %>% filter(year==yr),col='gray70',size=0.5)+
+    geom_sf(data=d1,size=0.5,aes(col=prop))+
+    labs(color="Proportion")+
+    coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+    scale_color_viridis(direction = -1,limits=c(0,1),na.value='gray70')+
+    labs(title=paste0(yr,": ",tools::toTitleCase(stg)))+
+    theme(legend.position=c(0.7,0.8),legend.background = element_rect(color="white"))
+  ggsave(here('model output','maps',stg,paste0('Map ',yr,' ',stg,' proportions.png')),p,w=8,h=12)
+})
+
+```
+
+# Animate?
+
+```{r}
+list.files(here('model output','maps','juvenile'), pattern = '*.png', full.names = TRUE) %>% 
+        image_read() %>% # reads each path file
+        image_join() %>% # joins image
+        image_animate(delay=300) %>% # animates, can opt for number of loops
+        image_write(here('model output','maps','juvenile',"juveniles.gif")) # write to current dir
+list.files(here('model output','maps','adult'), pattern = '*.png', full.names = TRUE) %>% 
+        image_read() %>% # reads each path file
+        image_join() %>% # joins image
+        image_animate(delay=300) %>% # animates, can opt for number of loops
+        image_write(here('model output','maps','adult',"adults.gif")) # write to current dir
+list.files(here('model output','maps'), pattern = '*.png', full.names = TRUE) %>% 
+        image_read() %>% # reads each path file
+        image_join() %>% # joins image
+        image_animate(delay=300) %>% # animates, can opt for number of loops
+        image_write(here('model output','maps',"samples_map.gif")) # write to current dir
+```
+
+
+

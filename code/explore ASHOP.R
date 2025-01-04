@@ -78,3 +78,22 @@ dat_age %>%
   summarise(meanlen=mean(LENGTH,na.rm=T)) %>%
   ggplot(aes(doybin,meanlen,fill=SEX))+
   geom_col(position='dodge')
+
+dat_age %>% 
+  filter(SEX !="U") %>% 
+  mutate(doy=yday(HAUL_DATE)) %>% 
+  mutate(latbin=cut(LATDD_END,10)) %>% 
+  group_by(latbin,SEX) %>% 
+  summarise(meanlen=mean(LENGTH,na.rm=T)) %>%
+  ggplot(aes(latbin,meanlen,col=SEX))+
+  geom_point()
+
+dat_age %>% 
+  filter(SEX !="U") %>% 
+  mutate(doy=yday(HAUL_DATE)) %>% 
+  mutate(latbin=cut(LATDD_END,10)) %>% 
+  group_by(YEAR,latbin,SEX) %>% 
+  summarise(meanlen=mean(LENGTH,na.rm=T)) %>%
+  ggplot(aes(latbin,meanlen,col=SEX))+
+  geom_point()+
+  facet_wrap(~YEAR)

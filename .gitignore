@@ -3,3 +3,5 @@
 .RData
 .Ruserdata
 /data/CONFIDENTIAL/*
+# large data files
+/data/glorys/*
