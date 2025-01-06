@@ -6,37 +6,32 @@ library(sf)
 library(nngeo)
 library(here)
 library(viridis)
+library(stars)
+options(dplyr.summarise.inform = FALSE)
+
 pt <- theme_minimal()+
   theme(panel.border = element_rect(fill=NA,color='black'))
 theme_set(pt)
 
-#### DATASETS ####
+library(rnaturalearth)
+library(tictoc) # for timing code
+
+# coastline, joined US and Canada
+coast <- ne_states(country='United States of America',returnclass = 'sf') %>% 
+  filter(name %in% c('California','Oregon','Washington','Nevada','Idaho','Montana'))
+coastcn <- ne_countries(country="Canada",scale=50,returnclass='sf')
+coast <- st_union(coast,coastcn)
+
+#### Datasets ####
 # FEAT observations first
 feat <- read_rds(here('data','CONFIDENTIAL','un-kriged_aged_output_allyears.rds'))
 # template 5km projection grid (from 00_make_FEAT_grid.R)
 feat_gr <- read_rds(here('data','grids','FEAT_5km_grid.rds'))
 
-# matching keys for the two datasets above
-feat_match <- read_rds(here('data','feat_obs_glorys_matchkey.rds'))
-feat_gr_match <- read_rds(here('data','feat_gr_glorys_matchkey.rds'))
-# correct GLORYS grids for the matching keys above
-glor_phys_xy <- list.files(here('data','glorys','phys','filtered'),full.names = T)[1] %>% 
-  read_rds() %>% 
-  distinct(longitude,latitude) %>%
-  mutate(glorID_phys=row_number())
-glor_bgc_xy <- list.files(here('data','glorys','bgc','filtered'),full.names = T)[1] %>% 
-  read_rds() %>% 
-  distinct(longitude,latitude) %>% 
-  mutate(glorID_bgc=row_number())
-
 # helper scripts
 source(here('code','helper_fxns.R'))
 
-#### Covariate Construction ####
-## Here is where we build covariates to then ##
-## match to the FEAT data. Just a couple of  ##
-## examples for now, we can probably expand  ##
-## this later
+#### Bathymetry ####
 
 # Bathymetry for the FEAT observations can be extracted from marmap
 feat_xy <- feat %>% 
@@ -120,64 +115,166 @@ feat %>%
   scale_color_gradient2()+
   coord_equal()
 
-## SEASONAL MEAN PHYSICS ###
-# calculate seasonal means for covariates
-# for now, at all depths
-# Spring: MAM
-# Summer: JJA
-# Fall: SON
-# Winter: DJF
-# For a given year, winter will be from the PREVIOUS year (i.e. the year before plus January of the focal year)
-glorys_depths <- read_rds(here('data','glorys','phys','filtered','glorys_physics_2019_spatial_filtered.rds')) %>% 
-  distinct(depth)
-gdf <- read_rds(here('data','glorys','phys','filtered','glorys_physics_2019_spatial_filtered.rds'))
-summarise_seasonal_glorys_phys <- function(glorys_yr){
-  # previous year
-  gdf1 <- read_rds(here('data','glorys','phys','filtered',paste0('glorys_physics_',glorys_yr-1,'_spatial_filtered.rds')))
-  # current year
-  gdf2 <- read_rds(here('data','glorys','phys','filtered',paste0('glorys_physics_',glorys_yr,'_spatial_filtered.rds')))
-  # summarise
-  out <- bind_rows(gdf1,gdf2) %>% 
-    mutate(year=year(date),mth=month(date)) %>% 
-    # filter out December of the focal year, which will be included in next year's data
-    # and filter out JF of the previous year, which was included in last year's data
-    filter(!(year==glorys_yr&mth==12)) %>% 
-    filter(!(year==(glorys_yr-1)& (mth%in%c(1,2)))) %>%
-    #add seasons
-    mutate(season=case_when(
-      mth %in% c(3:5) ~ "spring",
-      mth %in% c(6:8) ~ "summer",
-      mth %in% c(9:11) ~ "autumn",
-      mth %in% c(12,1,2) ~ "winter"
-      )) %>% 
-    left_join(glor_phys_xy,by=join_by(longitude,latitude)) %>% 
-    # now, group by season and summarise
-    group_by(glorID_phys,latitude,longitude,depth,season) %>% 
-    summarise(across(all_of(c('so','thetao','uo','vo')),mean,.names="mean_{.col}")) %>% 
-    ungroup()
-  
-  out
-}
-# test
-seasonal_2019 <- summarise_seasonal_glorys_phys(glorys_yr=2019)
-# test plot, sea surface temperature
-seasonal_2019 %>% 
-  st_as_sf(coords=c("longitude","latitude"),crs=4326) %>% 
-  st_transform(st_crs(feat_gr)) %>% 
-  filter(depth==unique(seasonal_2019$depth)[1]) %>% 
-  ggplot(aes(color=mean_thetao))+
-  geom_sf(size=0.25)+
-  scale_color_viridis(option="turbo")+
-  facet_wrap(~season,nrow=2)
+#### GLORYS Covariates ####
+# Write a function to use the GLORYS summarized seasonal output (from 03_make_seasonal_glorys)
+# The function will, for an input year, variable, and depth range, return the seasonal spatial fields
+# For now, we extract the values at either
+# 1. locations of the FEAT 5km projection grid (in UTM zone 10)
+# 2. survey locations of the observed FEAT data (if there was a survey in that year)
 
-# test plot, northward velocity between ~150 and 250m depths
-seasonal_2019 %>% 
-  filter(depth %in% glorys_depths$depth[25:28]) %>% 
-  group_by(glorID_phys,season,latitude,longitude) %>% 
-  summarise(northvel=mean(mean_vo)) %>% 
-  st_as_sf(coords=c("longitude","latitude"),crs=4326) %>% 
-  st_transform(st_crs(feat_gr)) %>% 
-  ggplot(aes(color=northvel))+
-  geom_sf(size=0.25)+
-  scale_color_viridis(option="turbo")+
-  facet_wrap(~season,nrow=2)
+# variables to choose from, and their file names
+phys4dfls <- list.files(here('data','glorys','phys','seasonal'),full.names = T) %>% str_subset("4d")
+phys4dvars <- phys4dfls[1] %>% read_rds() %>% 
+  dplyr::select(-any_of(c("latitude","longitude","season","depth"))) %>% 
+  names()
+phys4dtbl <- crossing(varname=phys4dvars,year=1995:2023) %>% 
+  mutate(file_name=rep(phys4dfls,length(phys4dvars)))%>% mutate(grid_type='phys')
+phys3dfls <-list.files(here('data','glorys','phys','seasonal'),full.names = T) %>% str_subset("3d")
+phys3dvars <- phys3dfls[1] %>% read_rds() %>% 
+  dplyr::select(-any_of(c("latitude","longitude","season","depth"))) %>% 
+  names() 
+phys3dtbl <- crossing(varname=phys3dvars,year=1995:2023) %>% 
+  mutate(file_name=rep(phys3dfls,length(phys3dvars)))%>% mutate(grid_type='phys')
+bgcfls <- list.files(here('data','glorys','bgc','seasonal'),full.names = T)
+bgcvars <- bgcfls[1] %>% 
+  read_rds() %>% dplyr::select(-any_of(c("latitude","longitude","season","depth"))) %>% 
+  names()
+bgctbl <- crossing(varname=bgcvars,year=1995:2023) %>% 
+  mutate(file_name=rep(bgcfls,length(bgcvars)))%>% mutate(grid_type='bgc')
+
+# all year/file name combos
+all_v_fls <- bind_rows(phys4dtbl,phys3dtbl,bgctbl)
+all_v <- unique(all_v_fls$varname)
+all_v
+
+# all possible depth slices
+glorys_depths_phys <- read_rds(here('data','glorys','phys','filtered','glorys_physics_2019_spatial_filtered.rds')) %>% 
+  distinct(depth)
+glorys_depths_bgc <- read_rds(here('data','glorys','bgc','filtered','glorys_bgc_2019_spatial_filtered.rds')) %>% 
+  distinct(depth)
+
+# template GLORYS grids
+## physics first
+# take an example year
+glor_phys_stars <- read_stars(here('data','glorys','phys','raw','glorys_physics_1995.nc'),sub="thetao") %>% 
+  st_set_crs(4326)
+# take the first time/depth slice
+slc <- slice(glor_phys_stars,index=1,along='time') %>% slice("depth",1)
+# take a spatial subset/crop, using the FEAT footprint
+cropped <- slc[feat_foot_ll]
+glor_phys_templ <- cropped %>% 
+  st_as_sf() %>% 
+  mutate(gid=row_number()) %>% 
+  select(gid)
+# plot, with arbitrary value (this will get filled with what we extract from GLORYS)
+ggplot(glor_phys_templ,aes(fill=gid))+geom_sf(col=NA)
+
+## for BGC
+# take an example year
+glor_bgc_stars <- read_stars(here('data','glorys','bgc','raw','glorys_bgc_1995.nc'),sub="chl") %>% 
+  st_set_crs(4326)
+# take the first time/depth slice
+slc <- slice(glor_bgc_stars,index=1,along='time') %>% slice("depth",1)
+# take a spatial subset/crop, using the FEAT footprint
+cropped <- slc[feat_foot_ll]
+glor_bgc_templ <- cropped %>% 
+  st_as_sf() %>% 
+  mutate(gid=row_number()) %>% 
+  select(gid)
+
+# Matching function
+# for any of the variables in all_v, we can use this function
+# depths should be positive, in meters
+make_glorys_covariate <- function(glorys_yr,variable='mean_thetao',
+                                  # depth minimum and maximum (remember that the shallowest GLORYS depth is ~0.5m
+                                  depth_min,depth_max=depth_min,
+                                  # if a depth range is selected, take a mean or a sum (integral)?
+                                  type="mean",
+                                  # return FEAT survey data locations (survey) or FEAT projection grid (grid)?
+                                  return_what='survey'
+                                  ){
+  
+  # filter for the right GLORYS file using the table we made
+  sub_glorys <- all_v_fls %>%
+    # find the right year and the right variable
+    filter(year==glorys_yr,varname==variable) %>% 
+    pull(file_name) %>% 
+    # load
+    read_rds() %>% 
+    # filter depth
+    filter(depth >= depth_min, depth <= depth_max) %>% 
+    dplyr::select(any_of(c(variable,"latitude","longitude","season","depth")))
+  
+  # make final calculation of the variable of interest
+  if(type=="mean" & depth_max!=depth_min){
+    sub_glorys <- sub_glorys %>% 
+      group_by(latitude,longitude,season) %>% 
+      summarise(across(all_of(variable),mean,.names="{.col}"))
+  } else if(type=="sum" & depth_max!=depth_min){
+    sub_glorys <- sub_glorys %>% 
+      group_by(latitude,longitude,season) %>% 
+      summarise(across(all_of(variable),sum,.names="{.col}"))
+  }
+  
+  # cast to wide (one variable for each season)
+  sub_glorys_wide <- sub_glorys %>% ungroup() %>% 
+    pivot_wider(names_from="season",values_from=variable,names_prefix = paste0(variable,"_"))
+  
+  # match to the outputs
+  # glorys points, spatial
+  pts_glorys_sf <- sub_glorys_wide %>% 
+    st_as_sf(coords=c('longitude','latitude'),crs=4326)
+  
+  # which template GLORYS grid to use?
+  grid_type <- all_v_fls$grid_type[match(variable,all_v_fls$varname)]
+  if(grid_type=="phys") glorys_sf=glor_phys_templ
+  if(grid_type=="bgc") glorys_sf=glor_bgc_templ
+  
+  # fill the template with the GLORYS data
+  glorys_sf_filled <- glorys_sf %>% 
+    st_join(pts_glorys_sf)
+
+  if(return_what=="survey"){
+    # FEAT observation points
+    sub_feat <- feat %>% filter(year==glorys_yr)
+    feat_pts <- sub_feat %>%
+      st_as_sf(coords=c("Lon","Lat"),crs=4326)
+    # joined to GLORYS
+    out <- st_join(feat_pts,glorys_sf_filled)
+  }
+  if(return_what=="grid"){
+    # FEAT projection grid points
+    feat_gr_pts <- feat_gr %>% 
+      st_transform(4326) %>% 
+      st_centroid()
+    
+    out <- feat_gr_pts %>%
+      st_join(glorys_sf_filled) %>% 
+      st_set_geometry(NULL) %>% 
+      right_join(feat_gr) %>% 
+      mutate(year=glorys_yr) %>% 
+      st_as_sf()
+  }
+  
+  return(out)
+  }
+
+# Try
+# sst
+test <- make_glorys_covariate(glorys_yr=2005,variable="mean_thetao",
+                              depth_min=min(glorys_depths_phys$depth),type = "mean",
+                              return_what="grid")
+test %>%
+  pivot_longer(contains("thetao")) %>% 
+  ggplot()+
+  geom_sf(aes(fill=value),col=NA)+
+  facet_wrap(~name)+
+  scale_fill_viridis(option="turbo")
+
+# Try making a full time series?
+tic("making sst")
+sst_gridded <- map(1995:2023,function(x) make_glorys_covariate(glorys_yr=x,variable="mean_thetao",
+                                                               depth_min=min(glorys_depths_phys$depth),type = "mean",
+                                                               return_what="grid")) %>% 
+  list_rbind()
+toc()

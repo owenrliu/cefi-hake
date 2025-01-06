@@ -7,7 +7,7 @@ library(reticulate)
 library(tidync)
 library(tictoc)
 
-# install_python() 
+# install_python() use this instead of the next line if this is the first time using reticulate/python
 use_python("C:/Users/Owen.Liu/AppData/Local/r-reticulate/r-reticulate/pyenv/pyenv-win/versions/3.10.11/python.exe")
 virtualenv_create(envname = "thiscopernicus")
 virtualenv_install("thiscopernicus", packages = c("copernicusmarine"))
@@ -32,7 +32,7 @@ bb <- read_rds(here('data','grids','FEAT_5km_grid.rds')) %>%
 feat_times <- read_rds(here('data','CONFIDENTIAL','un-kriged_aged_output_allyears.rds')) %>% 
   pull(year) %>% 
   range()
-startyr <- feat_times[1]
+startyr <- feat_times[1]-1
 endyr <- feat_times[2]
 
 ## DOWNLOAD PHYSICS DATA FROM GLORYS HINDCAST

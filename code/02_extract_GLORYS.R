@@ -97,7 +97,7 @@ toc()
 # ~10s for one year
 
 # finally, apply to all years (except 2021 is a special case)
-for(i in c(1:26,29,30)){
+for(i in c(1:27,30,31)){
   tic(paste("processing",fls[i]))
   extr <- purrr::map(1:12,extract_glorys_feat_footprint,nc=fls[i]) %>% 
     list_rbind()
@@ -108,10 +108,10 @@ for(i in c(1:26,29,30)){
 
 # 2021 is weird because it splits two datasets
 # the first has january to july, the second, august to december
-tic(paste("processing",fls[27],"and",fls[28]))
-extr2021.1 <- purrr::map(1:6,extract_glorys_feat_footprint,nc=fls[27]) %>% 
+tic(paste("processing",fls[28],"and",fls[29]))
+extr2021.1 <- purrr::map(1:6,extract_glorys_feat_footprint,nc=fls[28]) %>% 
     list_rbind()
-extr2021.2 <- purrr::map(1:6,extract_glorys_feat_footprint,nc=fls[28]) %>% 
+extr2021.2 <- purrr::map(1:6,extract_glorys_feat_footprint,nc=fls[29]) %>% 
   list_rbind()
 extr <- bind_rows(extr2021.1,extr2021.2)
 fn_out <- fls[27] %>% str_replace(".nc","_spatial_filtered.rds") %>% str_replace("raw","filtered")
@@ -146,7 +146,7 @@ extract_glorys3D_feat_footprint <- function(nc,mth){
 }
 
 
-for(i in c(1:26,29,30)){
+for(i in c(1:27,30,31)){
   tic(paste("processing",fls[i]))
   extr <- purrr::map(1:12,extract_glorys3D_feat_footprint,nc=fls[i]) %>% 
     list_rbind()
@@ -156,7 +156,7 @@ for(i in c(1:26,29,30)){
 }
 
 # for 2021
-tic(paste("processing",fls[27],"and",fls[28]))
+tic(paste("processing",fls[28],"and",fls[29]))
 extr2021.1 <- purrr::map(1:6,extract_glorys3D_feat_footprint,nc=fls[27]) %>% 
   list_rbind()
 extr2021.2 <- purrr::map(1:6,extract_glorys3D_feat_footprint,nc=fls[28]) %>% 
