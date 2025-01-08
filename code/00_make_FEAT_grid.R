@@ -150,7 +150,9 @@ nn_samp_dists <- nn_samp %>% pluck("dist") %>% unlist()
 
 feat_grid_final <- feat_grid_final %>% 
   # distance calculated by st_nn() is in meters, so convert to km here
-  mutate(dist_shelf_km=nn_samp_dists/1000)
+  mutate(dist_shelf_km=nn_samp_dists/1000) %>% 
+  # if point is INSHORE from 200m (i.e., shallower), switch the shelf distance sign to negative
+  mutate(dist_shelf_km=if_else(bathy< -200,dist_shelf_km,-dist_shelf_km))
 
 # plot
 feat_grid_shelf <- ggplot()+
