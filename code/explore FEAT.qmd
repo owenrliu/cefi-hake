@@ -28,9 +28,11 @@ coastcn <- ne_countries(country="Canada",scale=50,returnclass='sf')%>%
   st_transform(crs = "+proj=utm +zone=10 +datum=WGS84 +units=km")
 
 coast <- st_union(coast,coastcn)
-ggplot(coast)+geom_sf()
 ```
 
+```{r}
+source(here('code','helper_fxns.R'))
+```
 
 # Import Data
 
@@ -152,7 +154,35 @@ walk(unique(dat_aged_sf$year),function(yr){
 })
 ```
 
-Spatial age props
+Rotated and facetted map of samples
+
+```{r}
+coast_rot <- coast %>% 
+  st_transform(st_crs(dat_aged_sf)) %>% 
+  rotate_sf(.,pi/9) %>%
+  st_set_crs(st_crs(dat_aged_sf))
+
+dat_aged_rot <- dat_aged_sf %>% 
+  filter(sex=='female') %>% 
+  rotate_sf(.,pi/9) %>%
+  st_set_crs(st_crs(dat_aged_sf))
+bbox_rot <- st_bbox(dat_aged_rot)
+
+p_samps_all_yrs <- ggplot()+
+  geom_sf(data=coast_rot,fill='gray80')+
+  geom_sf(data=dat_aged_rot,size=0.2,aes(col=nonzero))+
+  labs(color="Hake Presence")+
+  coord_sf(xlim = c(bbox_rot[1],bbox_rot[3]),ylim=c(bbox_rot[2],bbox_rot[4]),datum=NA)+
+  # coord_sf(xlim = c(buff[1],buff[3]),ylim=c(buff[2],buff[4]),expand=FALSE)+
+  scale_color_manual(values=c("gray80","red"))+
+  facet_wrap(~year,nrow=2)+
+  theme(legend.background = element_rect(color="white"))
+
+ggsave(here('model output','maps',paste0('FEAT samples map all years.png')),p_samps_all_yrs,w=10,h=8)
+```
+
+
+## Spatial age props
 
 ```{r,fig.height=12,fig.width=8}
 dat_spatial_ageprop <- dat_aged_sf %>% 
@@ -226,6 +256,76 @@ walk2(yrs_stages$year,yrs_stages$stage,function(yr,stg){
 })
 
 ```
+## Hovmoller
+
+Make a hovmoller heat map
+
+```{r}
+dat_hov <- dat_spatial_ageprop_binned %>% 
+  st_as_sf() %>% 
+  st_transform(4326) %>% 
+  mutate(lat=st_coordinates(.)[,2],lon=st_coordinates(.)[,1]) %>% 
+  st_set_geometry(NULL) %>% 
+  mutate(latbin=cut(lat,breaks = c(34.5,seq(36,53,by=0.5),58.5))) %>% 
+  group_by(year,latbin,binclass) %>% 
+  summarise(totn=sum(totn)/1e6) %>% 
+  ungroup() %>% 
+  mutate(year=factor(year)) %>%
+  complete(year,latbin,binclass,fill = list(totn=0)) %>% 
+  group_by(year) %>% 
+  mutate(prop=totn/sum(totn)) %>% 
+  ungroup()
+  
+p_hov <- dat_hov %>% 
+  ggplot(aes(year,latbin,fill=totn))+
+  geom_tile()+
+  facet_wrap(~binclass)+
+  scale_fill_viridis(option="turbo")+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  labs(x="Year",y="Latitude Range",fill="Abundance\n(millions)")
+p_hov
+
+p_hov_rel <- dat_hov %>% 
+  ggplot(aes(year,latbin,fill=prop))+
+  geom_tile()+
+  facet_wrap(~binclass)+
+  scale_fill_viridis(option="A")+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  labs(x="Year",y="Latitude Range",fill="Relative Abundance")
+p_hov_rel
+```
+
+## Center of Gravity
+
+Very coarse latitudinal COG, from the survey
+
+```{r}
+
+dat_cog <- dat_spatial_ageprop %>% 
+  st_as_sf() %>% 
+  st_transform(4326) %>% 
+  mutate(lat=st_coordinates(.)[,2],lon=st_coordinates(.)[,1]) %>% 
+  st_set_geometry(NULL) %>% 
+  mutate(binclass=ifelse(age%in%c(1,2,3),"juvenile","adult")) %>% 
+  group_by(year,binclass) %>% 
+  summarise(cog=weighted.mean(lat,n)) %>% 
+  ungroup() %>% 
+  mutate(year=factor(year))
+
+glimpse(dat_cog)
+
+p_cog <- dat_cog %>% 
+  ggplot(aes(year,cog,group=binclass,color=binclass))+
+  geom_line()+
+  geom_hline(yintercept=44,linetype=2,color="black")+
+  geom_hline(yintercept=40,linetype=2,color="gray50")+
+  scale_y_continuous(breaks=seq(39,51,by=2))+
+  labs(x="Year",y="Mean Latitude",color="Stage")
+
+p_cog
+ggsave(here('data','plots','lat_cog_FEAT.png'),p_cog,h=6,w=8)
+```
+
 
 # Animate?
 

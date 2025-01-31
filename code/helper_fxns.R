@@ -34,3 +34,16 @@ get_bathy_pts <- function(sf_dat){
   # return the computed depths
   return(xy.bathy)
 }
+
+# Rotate map?? Just for visualizing facetted plots
+
+# rotate function (see here: https://r-spatial.github.io/sf/articles/sf3.html#affine-transformations
+rot <- function(a) matrix(c(cos(a), sin(a), -sin(a), cos(a)), 2, 2)
+
+rotate_sf <- function(sf_df,a){
+  sf_df %>% 
+    mutate(geom_rot = st_geometry(.)*rot(a)) %>%
+    st_drop_geometry() %>%
+    rename(geometry = geom_rot) %>%
+    st_set_geometry("geometry")
+}

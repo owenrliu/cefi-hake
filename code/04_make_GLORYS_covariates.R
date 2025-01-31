@@ -387,6 +387,7 @@ walk(1995:2023,function(y){
   p <- ggplot()+
     geom_sf(data=coast_utm,fill='gray70')+
     geom_sf(data=cuc_sub,aes(fill=cuc,col=cuc))+
+    geom_sf(data=shelf_break,size=0.15,color='grey30')+
     facet_wrap(~name)+
     xlim(bb[1],bb[3])+ylim(bb[2],bb[4])+
     labs(title=paste("California Undercurrent:",y))+
@@ -654,3 +655,146 @@ toc() #
 
 write_rds(zonal_u_feat,here('data','glorys','phys','derived covariates','zonal_u_feat_obs.rds'))
 write_rds(zonal_gridded,here('data','glorys','phys','derived covariates','zonal_u_gridded.rds'))
+
+#### Sea Surface Height ####
+## SSH is related to flow and upwelling, which may be important drivers of hake distribution
+
+tic("making SSH, FEAT grid")
+ssh_gridded <- map(1995:2023,function(x) make_glorys_covariate(glorys_yr=x,variable="mean_zos",
+                                                               depth_min=0,type = "mean",
+                                                               return_what="grid")) %>% 
+  list_rbind()%>% 
+  # rename
+  rename_with(~str_replace_all(.,"mean_zos","ssh"),contains("mean_zos"))
+toc()
+
+# make and save plots for later
+walk(1995:2023,function(y){
+  ssh_sub <- ssh_gridded %>%
+    filter(year==y,!is.na(ssh_summer)) %>% 
+    st_as_sf() %>% 
+    pivot_longer(contains("ssh"),values_to="ssh") %>% 
+    mutate(name=str_replace(name,"ssh_","")) %>% 
+    mutate(name=factor(name,levels=c("winter","spring","summer","autumn")))
+  p <- ggplot()+
+    geom_sf(data=coast_utm,fill='gray70')+
+    geom_sf(data=ssh_sub,aes(fill=ssh,col=ssh))+
+    facet_wrap(~name)+
+    xlim(bb[1],bb[3])+ylim(bb[2],bb[4])+
+    labs(title=paste("Mean SSH:",y))+
+    scale_fill_viridis(option="turbo",limits=c(-0.1,0.3),breaks=seq(-0.1,0.3,by=0.1))+
+    scale_color_viridis(option="turbo",limits=c(-0.1,0.3),breaks=seq(-0.1,0.3,by=0.1))
+  ggsave(here('data','glorys','maps',paste0("ssh_seasons_",y,".png")),p,w=8,h=12)
+})
+
+# ssh as a covariate
+tic("making ssh, FEAT obs")
+ssh_feat <- map(1995:2023,function(x) make_glorys_covariate(glorys_yr=x,variable="mean_zos",
+                                                            depth_min=0,type = "mean",
+                                                            return_what="survey")) %>% 
+  list_rbind() %>% 
+  # rename
+  rename_with(~str_replace_all(.,"mean_zos","ssh"),contains("mean_zos"))
+toc()
+
+write_rds(ssh_feat,here('data','glorys','phys','derived covariates','ssh_feat_obs.rds'))
+write_rds(ssh_gridded,here('data','glorys','phys','derived covariates','ssh_gridded.rds'))
+
+
+#### Eddy/total Kinetic Energy ####
+# use u from the extraction above, and calculate v at the surface similarly
+# then, make TKE, calculated as 0.5(u^2+v^2)
+
+tic("making meridional flow, FEAT grid")
+meridional_gridded <- map(1995:2023,function(x) make_glorys_covariate(glorys_yr=x,variable="mean_vo",
+                                                                 depth_min=glorys_depths_phys$depth[1],
+                                                                 type = "mean",
+                                                                 return_what="grid")) %>% 
+  list_rbind()%>% 
+  # rename
+  rename_with(~str_replace_all(.,"mean_vo","merid_v"),contains("mean_vo"))
+toc() 
+
+tic("making meridional flow, FEAT obs")
+meridional_feat <- map(1995:2023,function(x) make_glorys_covariate(glorys_yr=x,variable="mean_vo",
+                                                                depth_min=glorys_depths_phys$depth[1],
+                                                                type = "mean",
+                                                                return_what="survey")) %>% 
+  list_rbind()%>% 
+  # rename
+  rename_with(~str_replace_all(.,"mean_uo","merid_v"),contains("mean_vo"))
+toc() #
+
+tke_gridded <- zonal_gridded %>% 
+  left_join(meridional_gridded,by = join_by(E_km, N_km, bathy_m, dist_shelf_km, gid, depth, year, x)) %>% 
+  mutate(
+    tke_winter = 0.5*(zonal_u_winter^2+merid_v_winter^2),
+    tke_spring = 0.5*(zonal_u_spring^2+merid_v_spring^2),
+    tke_summer = 0.5*(zonal_u_summer^2+merid_v_summer^2),
+    tke_autumn = 0.5*(zonal_u_autumn^2+merid_v_autumn^2),
+  ) %>% 
+# to make EKE, define a spatial mean
+  group_by(gid) %>% 
+  mutate(
+    eke_winter = tke_winter-mean(tke_winter,na.rm=T),
+    eke_spring = tke_spring-mean(tke_spring,na.rm=T),
+    eke_summer = tke_summer-mean(tke_summer,na.rm=T),
+    eke_autumn = tke_autumn-mean(tke_autumn,na.rm=T),
+  ) %>% 
+  ungroup()
+
+
+eke_sub <- tke_gridded %>%
+  filter(year==1995,!is.na(eke_summer)) %>% 
+  st_as_sf() %>% 
+  pivot_longer(contains("eke"),values_to="eke") %>% 
+  mutate(name=str_replace(name,"eke_","")) %>% 
+  mutate(name=factor(name,levels=c("winter","spring","summer","autumn")))
+p <- ggplot()+
+  geom_sf(data=coast_utm,fill='gray70')+
+  geom_sf(data=eke_sub,aes(fill=eke,col=eke))+
+  facet_wrap(~name)+
+  xlim(bb[1],bb[3])+ylim(bb[2],bb[4])+
+  labs(title=paste("Mean EKE:",1995))+
+  scale_fill_gradient2(limits=c(-0.05,0.05),breaks=seq(-0.05,0.05,by=0.02))+
+  scale_color_gradient2(limits=c(-0.05,0.05),breaks=seq(-0.05,0.05,by=0.02))
+
+
+# make and save plots for later
+# TKE
+walk(1995:2023,function(y){
+  tke_sub <- tke_gridded %>%
+    filter(year==y,!is.na(tke_summer)) %>% 
+    st_as_sf() %>% 
+    pivot_longer(contains("tke"),values_to="tke") %>% 
+    mutate(name=str_replace(name,"tke_","")) %>% 
+    mutate(name=factor(name,levels=c("winter","spring","summer","autumn")))
+  p <- ggplot()+
+    geom_sf(data=coast_utm,fill='gray70')+
+    geom_sf(data = tke_sub,aes(fill=tke,col=tke))+
+    facet_wrap(~name)+
+    xlim(bb[1],bb[3])+ylim(bb[2],bb[4])+
+    labs(title=paste("Mean TKE:",y))+
+    scale_fill_viridis(option="turbo",limits=c(0,0.24),breaks=seq(0,0.2,by=0.04))+
+    scale_color_viridis(option="turbo",limits=c(0,0.24),breaks=seq(0,0.2,by=0.04))
+  ggsave(here('data','glorys','maps',paste0("tke_seasons_",y,".png")),p,w=8,h=12)
+})
+
+# EKE
+walk(1995:2023,function(y){
+  eke_sub <- tke_gridded %>%
+    filter(year==y,!is.na(eke_summer)) %>% 
+    st_as_sf() %>% 
+    pivot_longer(contains("eke"),values_to="eke") %>% 
+    mutate(name=str_replace(name,"eke_","")) %>% 
+    mutate(name=factor(name,levels=c("winter","spring","summer","autumn")))
+  p <- ggplot()+
+    geom_sf(data=coast_utm,fill='gray70')+
+    geom_sf(data=eke_sub,aes(fill=eke,col=eke))+
+    facet_wrap(~name)+
+    xlim(bb[1],bb[3])+ylim(bb[2],bb[4])+
+    labs(title=paste("Mean EKE:",y))+
+    scale_fill_gradient2(limits=c(-0.05,0.05),breaks=seq(-0.05,0.05,by=0.02))+
+    scale_color_gradient2(limits=c(-0.05,0.05),breaks=seq(-0.05,0.05,by=0.02))
+  ggsave(here('data','glorys','maps',paste0("eke_seasons_",y,".png")),p,w=8,h=12)
+})
